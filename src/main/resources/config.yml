@@ -1,0 +1,29 @@
+# 电力机器人配置文件
+energy:
+  # 每台机器人可存储的最大电量 (J)
+  capacity: 512
+  # 机器人每执行一条脚本指令消耗的电量 (J)
+  # 参考: 燃煤发电机 (COAL_GENERATOR) 每 tick 发电 8 J
+  consumption-per-operation: 8
+
+  # 通过 "安卓接口(燃料)" 为机器人充电的物品
+  # 格式: Slimefun物品ID: 单个物品可充入的电量 (J)
+  interface-charging:
+    POWER_CRYSTAL: 50
+    BATTERY: 100
+
+# 速度倍率 (1.0 = 原版机器人速度, 即每周期执行 1 条指令)
+# 有效范围 0.1 ~ 3.0; 纯电动挡/全速挡/自动挡(电网内) 使用 fast
+speed:
+  fast: 2.0
+  # 标准速度: 混合挡 / 节能模式 / 自动模式(离网电池) 使用 normal
+  normal: 1.0
+  # 低速: 燃料挡 (经济挡) 使用 slow
+  slow: 0.5
+
+# 默认挡位
+defaults:
+  # 混合动力机器人默认挡位: PURE_ELECTRIC / MIXED / FUEL
+  hybrid-gear: MIXED
+  # 纯电动机器人默认模式: AUTO / FAST / ECO
+  pure-electric-mode: AUTO

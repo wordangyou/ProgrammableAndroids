@@ -1,0 +1,7 @@
+name: ElectricAndroids
+version: 1.5
+main: org.wordangyou.electricandroids.ElectricAndroids
+api-version: '1.21'
+depend: [Slimefun]
+author: ProgrammableAndroids
+description: 为 Slimefun 添加以电力驱动的可编程机器人, 无需任何燃料
