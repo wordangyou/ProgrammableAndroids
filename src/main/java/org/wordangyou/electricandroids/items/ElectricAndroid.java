@@ -1,19 +1,28 @@
 package org.wordangyou.electricandroids.items;
 
 import city.norain.slimefun4.api.menu.UniversalMenu;
+import com.xzavier0722.mc.plugin.slimefun4.storage.controller.SlimefunUniversalBlockData;
 import com.xzavier0722.mc.plugin.slimefun4.storage.controller.SlimefunUniversalData;
 import io.github.thebusybiscuit.slimefun4.api.items.ItemGroup;
 import io.github.thebusybiscuit.slimefun4.api.items.SlimefunItemStack;
 import io.github.thebusybiscuit.slimefun4.api.recipes.RecipeType;
 import io.github.thebusybiscuit.slimefun4.core.attributes.EnergyNetComponent;
 import io.github.thebusybiscuit.slimefun4.core.networks.energy.EnergyNetComponentType;
+import io.github.thebusybiscuit.slimefun4.implementation.Slimefun;
 import io.github.thebusybiscuit.slimefun4.implementation.items.androids.AndroidFuelSource;
+import io.github.thebusybiscuit.slimefun4.implementation.items.androids.Instruction;
 import io.github.thebusybiscuit.slimefun4.implementation.items.androids.ProgrammableAndroid;
 import java.util.List;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.wordangyou.electricandroids.ElectricAndroidUtils;
 import org.wordangyou.electricandroids.ElectricAndroids;
 
@@ -68,6 +77,64 @@ public class ElectricAndroid extends ProgrammableAndroid implements EnergyNetCom
      */
     private void parentTick(Block b, SlimefunUniversalData data) {
         super.tick(b, data);
+    }
+
+    /**
+     * 脚本编辑器 (查看菜单): 打开后将 INTERFACE_FUEL 指令的文案改为充能语义。
+     */
+    @Override
+    public void openScript(Player p, SlimefunUniversalBlockData uniData, String sourceCode) {
+        super.openScript(p, uniData, sourceCode);
+        renameInterfaceFuelInstruction(p);
+    }
+
+    /**
+     * 脚本编辑器 (指令选择菜单): 打开后将 INTERFACE_FUEL 指令的文案改为充能语义。
+     */
+    @Override
+    protected void editInstruction(Player p, SlimefunUniversalBlockData uniData, String[] script, int index) {
+        super.editInstruction(p, uniData, script, index);
+        renameInterfaceFuelInstruction(p);
+    }
+
+    /**
+     * 纯电动机器人的 INTERFACE_FUEL 指令实际执行的是 {@code chargeFromInterface()}
+     * (消耗面向的安卓接口中的能量物品充能), 而非装载燃料, 因此将脚本编辑器中的
+     * "从容器中取出燃料" 文案改为充能语义, 避免误导。
+     * <p>
+     * 文案通过本地化键动态获取 (兼容自定义语言文件), 仅修改菜单显示, 不影响脚本数据。
+     */
+    private static void renameInterfaceFuelInstruction(Player p) {
+        LegacyComponentSerializer legacySection = LegacyComponentSerializer.legacySection();
+        PlainTextComponentSerializer plainText = PlainTextComponentSerializer.plainText();
+        String rawLabel = Slimefun.getLocalization()
+                .getMessage(p, "android.scripts.instructions." + Instruction.INTERFACE_FUEL.name());
+        String expected = plainText.serialize(legacySection.deserialize(rawLabel.replace('&', '§')));
+        Inventory inventory = p.getOpenInventory().getTopInventory();
+
+        for (int slot = 0; slot < inventory.getSize(); slot++) {
+            ItemStack item = inventory.getItem(slot);
+
+            if (item == null || !item.hasItemMeta()) {
+                continue;
+            }
+
+            ItemMeta meta = item.getItemMeta();
+
+            if (meta == null) {
+                continue;
+            }
+
+            Component name = meta.displayName();
+
+            if (name == null || !expected.equals(plainText.serialize(name))) {
+                continue;
+            }
+
+            meta.displayName(Component.text("从容器中取出能量", NamedTextColor.RED));
+            item.setItemMeta(meta);
+            inventory.setItem(slot, item);
+        }
     }
 
     /**

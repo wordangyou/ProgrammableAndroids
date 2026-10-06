@@ -8,9 +8,11 @@ energy:
 
   # 通过 "安卓接口(燃料)" 为机器人充电的物品
   # 格式: Slimefun物品ID: 单个物品可充入的电量 (J)
+  # 数值取 8 (每次操作耗电量) 的倍数并与 capacity 对齐:
+  # 512 = 4 × BATTERY = 8 × POWER_CRYSTAL, 从空电精确充满, 零浪费
   interface-charging:
-    POWER_CRYSTAL: 50
-    BATTERY: 100
+    POWER_CRYSTAL: 64
+    BATTERY: 128
 
 # 速度倍率 (1.0 = 原版机器人速度, 即每周期执行 1 条指令)
 # 有效范围 0.1 ~ 3.0; 纯电动挡/全速挡/自动挡(电网内) 使用 fast

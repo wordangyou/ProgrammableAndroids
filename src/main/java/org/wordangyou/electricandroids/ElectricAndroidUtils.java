@@ -7,6 +7,7 @@ import com.xzavier0722.mc.plugin.slimefun4.storage.controller.SlimefunUniversalD
 import com.xzavier0722.mc.plugin.slimefun4.storage.util.StorageCacheUtils;
 import io.github.thebusybiscuit.slimefun4.api.items.SlimefunItem;
 import io.github.thebusybiscuit.slimefun4.core.attributes.EnergyNetComponent;
+import io.github.thebusybiscuit.slimefun4.core.networks.energy.EnergyNet;
 import io.github.thebusybiscuit.slimefun4.implementation.Slimefun;
 import io.github.thebusybiscuit.slimefun4.utils.HeadTexture;
 import io.github.thebusybiscuit.slimefun4.utils.SlimefunUtils;
@@ -36,9 +37,15 @@ public final class ElectricAndroidUtils {
     private static final int ENERGY_SLOT = 34;
 
     /**
-     * 原版机器人的燃料输入槽。
+     * 原版机器人的燃料输入槽; 混合动力机器人继续用于装载燃料,
+     * 纯电动版本则转为电池输入槽 (放入能量物品自动充能)。
      */
     private static final int FUEL_INPUT_SLOT = 43;
+
+    /**
+     * 混合动力机器人的电池输入槽 (从原版装饰边框的 42 号槽释放出来)。
+     */
+    private static final int HYBRID_BATTERY_SLOT = 42;
 
     /**
      * 每个 tick 周期最多执行的指令条数 (防止额度失控)。
@@ -63,8 +70,6 @@ public final class ElectricAndroidUtils {
     private static final String KEY_MODE = "speed-mode";
     private static final String KEY_GEAR = "power-gear";
     private static final String KEY_BUDGET = "op-budget";
-    private static final String KEY_LAST_CHARGE = "last-charge";
-    private static final String KEY_GRID = "grid-active";
     private static final String KEY_FUEL = "fuel";
 
     /**
@@ -80,14 +85,16 @@ public final class ElectricAndroidUtils {
     // ==================== 菜单 ====================
 
     /**
-     * 将纯电动机器人面板 34 号槽替换为 "速度模式" 显示, 并支持点击切换。
+     * 将纯电动机器人面板 34 号槽替换为 "速度模式" 显示, 并支持点击切换;
+     * 43 号燃料槽转为电池输入槽, 放入能量物品会自动充能。
      */
     public static void setupPureElectricMenu(SlimefunItem item) {
         setupMenu(item, false);
     }
 
     /**
-     * 将混合动力机器人面板 34 号槽替换为 "动力挡位" 显示, 并支持点击切换。
+     * 将混合动力机器人面板 34 号槽替换为 "动力挡位" 显示, 并支持点击切换;
+     * 42 号装饰槽释放为电池输入槽, 与 43 号燃料槽组成 [电池][燃料] 布局。
      */
     public static void setupHybridMenu(SlimefunItem item) {
         setupMenu(item, true);
@@ -109,6 +116,11 @@ public final class ElectricAndroidUtils {
                 toggleMode(p, hybrid);
                 return false;
             });
+
+            if (hybrid) {
+                // 将 42 号装饰边框释放为电池输入槽, 与 43 号燃料槽组成 [电池][燃料] 布局
+                preset.getPresetSlots().remove(HYBRID_BATTERY_SLOT);
+            }
         } catch (Exception x) {
             ElectricAndroids.getInstance().getLogger().warning("无法修改机器人菜单显示: " + x);
         }
@@ -156,6 +168,8 @@ public final class ElectricAndroidUtils {
      */
     public static void tickPureElectric(
             EnergyNetComponent component, Block b, SlimefunUniversalData data, ParentTick op) {
+        absorbBatterySlot(component, b, data, false);
+
         if (!"false".equals(data.getData("paused"))) {
             return;
         }
@@ -163,25 +177,8 @@ public final class ElectricAndroidUtils {
         ElectricAndroids plugin = ElectricAndroids.getInstance();
         int cost = plugin.getEnergyPerOperation();
 
-        long startCharge = component.getChargeLong(b.getLocation(), data);
-        long lastCharge = parseLong(data.getData(KEY_LAST_CHARGE), -1);
-        boolean grid;
-
-        if (lastCharge < 0) {
-            // 首次运行, 状态未知
-            grid = false;
-        } else if (startCharge > lastCharge) {
-            // 电量增加: 电网正在补电
-            grid = true;
-        } else if (startCharge < lastCharge) {
-            // 电量减少: 没有外部补电
-            grid = false;
-        } else {
-            // 电量不变 (满电稳态或本周期未执行): 沿用上次判定, 避免闪烁
-            grid = "true".equals(data.getData(KEY_GRID));
-        }
-
-        data.setData(KEY_GRID, String.valueOf(grid));
+        // 直接查询当前位置是否接入能源网络, 移动后立即生效, 不再依赖电量差值推测
+        boolean grid = isGridConnected(b.getLocation());
 
         double speed = switch (resolvePureMode(data)) {
             case MODE_FAST -> plugin.getFastSpeed();
@@ -208,7 +205,7 @@ public final class ElectricAndroidUtils {
                 break;
             }
 
-            component.setCharge(current.getLocation(), charge - cost);
+            component.removeCharge(current.getLocation(), cost);
             protectFuel(data);
             op.tick(current, data);
 
@@ -226,7 +223,6 @@ public final class ElectricAndroidUtils {
         }
 
         data.setData(KEY_BUDGET, formatBudget(budget));
-        data.setData(KEY_LAST_CHARGE, String.valueOf(component.getChargeLong(current.getLocation(), data)));
     }
 
     // ==================== 混合动力 tick ====================
@@ -236,6 +232,8 @@ public final class ElectricAndroidUtils {
      * 挡位: PURE_ELECTRIC (仅耗电, 没电停机) / MIXED (电优先, 燃料兜底) / FUEL (仅燃料)。
      */
     public static void tickHybrid(EnergyNetComponent component, Block b, SlimefunUniversalData data, ParentTick op) {
+        absorbBatterySlot(component, b, data, true);
+
         if (!"false".equals(data.getData("paused"))) {
             return;
         }
@@ -269,7 +267,7 @@ public final class ElectricAndroidUtils {
                 powered = charge >= cost;
 
                 if (powered) {
-                    component.setCharge(current.getLocation(), charge - cost);
+                    component.removeCharge(current.getLocation(), cost);
                     protectFuel(data);
                 }
             } else if (GEAR_FUEL.equals(gear)) {
@@ -277,7 +275,7 @@ public final class ElectricAndroidUtils {
             } else {
                 // 混合挡: 电优先, 燃料兜底
                 if (charge >= cost) {
-                    component.setCharge(current.getLocation(), charge - cost);
+                    component.removeCharge(current.getLocation(), cost);
                     protectFuel(data);
                     powered = true;
                 } else {
@@ -381,7 +379,7 @@ public final class ElectricAndroidUtils {
         long charge = component.getChargeLong(current.getLocation(), data);
         long capacity = component.getCapacityLong();
         float fuel = parseFloat(data.getData(KEY_FUEL), 0f);
-        boolean grid = "true".equals(data.getData(KEY_GRID));
+        boolean grid = isGridConnected(current.getLocation());
         String mode = hybrid ? resolveHybridGear(data) : resolvePureMode(data);
 
         menu.replaceExistingItem(ENERGY_SLOT, createStatusItem(hybrid, charge, capacity, mode, fuel, grid));
@@ -418,7 +416,7 @@ public final class ElectricAndroidUtils {
             lore.add(mark(MODE_FAST.equals(mode)) + "⚡ 全速 §8×" + formatSpeed(plugin.getFastSpeed()));
             lore.add(mark(MODE_ECO.equals(mode)) + "🔋 节能 §8×" + formatSpeed(plugin.getNormalSpeed()));
             lore.add("");
-            lore.add(grid ? "§a⚡ 电网充能中" : "§e🔋 电池供电");
+            lore.add(grid ? "§a⚡ 已接入电网" : "§e🔋 电池供电");
             lore.add("§7电量: §b" + charge + " §7/ §b" + capacity + " J");
             lore.add("");
             lore.add("§8\u21E8 §7点击切换速度模式");
@@ -543,6 +541,85 @@ public final class ElectricAndroidUtils {
         return items;
     }
 
+    // ==================== 电池输入槽 ====================
+
+    /**
+     * 电池输入槽吸收: 电量未满时, 消耗槽内的能量物品为机器人充能。
+     * <p>
+     * 与接口充能的零浪费规则不同, 这里允许溢出: 剩余空间不足一整颗时也会消耗整颗物品,
+     * 且溢出的电量会被保留 (电量可暂时超过容量, 随消耗自然回落)。吸收行为与电网一致,
+     * 不受暂停状态与动力挡位影响。
+     */
+    private static void absorbBatterySlot(
+            EnergyNetComponent component, Block b, SlimefunUniversalData data, boolean hybrid) {
+        UniversalMenu menu = data.getMenu();
+
+        if (menu == null) {
+            return;
+        }
+
+        int slot = hybrid ? HYBRID_BATTERY_SLOT : FUEL_INPUT_SLOT;
+        ItemStack item = menu.getItemInSlot(slot);
+
+        if (item == null || item.getType().isAir()) {
+            return;
+        }
+
+        Integer value = getChargeValue(item);
+
+        if (value == null) {
+            return;
+        }
+
+        Location location = b.getLocation();
+        long charge = component.getChargeLong(location, data);
+        long capacity = component.getCapacityLong();
+
+        if (charge >= capacity) {
+            return;
+        }
+
+        int amount = item.getAmount();
+        int consumed = 0;
+
+        while (consumed < amount && charge < capacity) {
+            consumed++;
+            charge += value;
+        }
+
+        if (consumed == 0) {
+            return;
+        }
+
+        if (consumed == amount) {
+            menu.replaceExistingItem(slot, null);
+        } else {
+            item.setAmount(amount - consumed);
+            menu.replaceExistingItem(slot, item);
+        }
+
+        // 直接写入电量数据以保留溢出: 原版 API 的 addCharge 会把电量封顶到容量
+        StorageCacheUtils.setData(location, "energy-charge", String.valueOf(charge));
+    }
+
+    /**
+     * 读取物品可转化成的电量, 非充能物品返回 null。
+     */
+    private static Integer getChargeValue(ItemStack item) {
+        for (Map.Entry<String, Integer> entry :
+                ElectricAndroids.getInstance().getInterfaceChargeItems().entrySet()) {
+            SlimefunItem chargeItem = SlimefunItem.getById(entry.getKey());
+
+            if (chargeItem == null || !SlimefunUtils.isItemSimilar(item, chargeItem.getItem(), true)) {
+                continue;
+            }
+
+            return entry.getValue();
+        }
+
+        return null;
+    }
+
     // ==================== 工具方法 ====================
 
     private static String resolvePureMode(SlimefunUniversalData data) {
@@ -591,6 +668,19 @@ public final class ElectricAndroidUtils {
         return lastPresent == null ? null : lastPresent.toLocation();
     }
 
+    /**
+     * 机器人当前位置是否接入能源网络。
+     * <p>
+     * 直接查询网络结构而非通过电量变化推测, 机器人移动后状态可立即刷新。
+     */
+    private static boolean isGridConnected(Location loc) {
+        try {
+            return EnergyNet.getNetworkFromLocation(loc) != null;
+        } catch (Exception x) {
+            return false;
+        }
+    }
+
     private static String formatBudget(double budget) {
         return String.valueOf(Math.round(budget * 10000) / 10000.0);
     }
@@ -610,18 +700,6 @@ public final class ElectricAndroidUtils {
             return String.valueOf((int) fuel);
         }
         return String.format(Locale.ROOT, "%.1f", fuel);
-    }
-
-    private static long parseLong(String value, long fallback) {
-        if (value == null) {
-            return fallback;
-        }
-
-        try {
-            return Long.parseLong(value);
-        } catch (NumberFormatException x) {
-            return fallback;
-        }
     }
 
     private static float parseFloat(String value, float fallback) {
